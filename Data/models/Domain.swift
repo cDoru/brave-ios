@@ -22,6 +22,12 @@ public final class Domain: NSManagedObject, CRUD {
 
     @NSManaged public var historyItems: NSSet?
     @NSManaged public var bookmarks: NSSet?
+    
+    private var nativeURL: URLComponents? {
+        get {
+            return URLComponents(string: url ?? "")
+        }
+    }
 
     // Currently required, because not `syncable`
     static func entity(_ context: NSManagedObjectContext) -> NSEntityDescription {
@@ -31,12 +37,35 @@ public final class Domain: NSManagedObject, CRUD {
     public override func awakeFromInsert() {
         super.awakeFromInsert()
     }
+    
+    // Returns `url` but switches the scheme from `http` <-> `https`
+    private func domainForInverseHttpScheme() -> Domain? {
+        // Must be an `http` related domain
+        if url?.hasPrefix("http") == false {
+            return nil
+        }
+        
+        guard var nativeURL = self.nativeURL, let context = self.managedObjectContext else {
+            return nil
+        }
+        
+        // "flip" the scheme
+        let inverseScheme = nativeURL.scheme == "http" ? "https" : "http"
+        nativeURL.scheme = inverseScheme
+        
+        guard let url = nativeURL.url else { return nil }
+        
+        // Return the flipped scheme version of `url`
+        return Domain.getOrCreateForUrl(url, context: context)
+    }
 
     public class func getOrCreateForUrl(_ url: URL, context: NSManagedObjectContext, save: Bool = true) -> Domain {
         let domainString = url.domainURL.absoluteString
         if let domain = Domain.first(where: NSPredicate(format: "url == %@", domainString), context: context) {
             return domain
         }
+        
+        // research cookie blocking
         
         // See #409:
         //  A larger refactor is probably wanted here.
@@ -85,7 +114,12 @@ public final class Domain: NSManagedObject, CRUD {
         switch shield {
             case .AllOff: domain.shield_allOff = setting
             case .AdblockAndTp: domain.shield_adblockAndTp = setting
-            case .HTTPSE: domain.shield_httpse = setting
+            case .HTTPSE:
+                domain.shield_httpse = setting
+                
+                // HTTPSE must be scheme indepedent or user may get stuck not being able to access the http version
+                //  of a website (turning off httpse for an upgraded-https domain does not allow access to http version)
+                domain.domainForInverseHttpScheme()?.shield_httpse = setting
             case .SafeBrowsing: domain.shield_safeBrowsing = setting
             case .FpProtection: domain.shield_fpProtection = setting
             case .NoScript: domain.shield_noScript = setting
